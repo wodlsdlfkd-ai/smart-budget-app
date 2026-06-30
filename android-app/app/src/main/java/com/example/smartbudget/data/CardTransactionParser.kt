@@ -1,0 +1,184 @@
+package com.example.smartbudget.data
+
+import android.util.Log
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+import java.util.regex.Pattern
+
+/**
+ * 카드 결제 알림 텍스트를 파싱하여 구조화된 데이터로 변환합니다.
+ * 
+ * 지원하는 카드사 알림 형식 예시:
+ * - "[신한카드] 홍길동님 12,000원 결제 스타벅스강남점 06/28 14:30"
+ * - "NH농협 홍길동님 카드승인 15,000원 한솥도시락 06/28 15:00"
+ * - "[현대카드] 승인 8,500원 CU편의점 06/28 16:20"
+ * - "[하나카드] 홍길동님 승인 30,000원 올리브영 06/28 17:00"
+ */
+object CardTransactionParser {
+
+    private const val TAG = "CardTxParser"
+
+    /**
+     * 파싱된 거래 데이터
+     */
+    data class Transaction(
+        val date: String,       // "2026-06-28"
+        val time: String,       // "14:30"
+        val amount: Int,        // 12000
+        val merchant: String,   // "스타벅스강남점"
+        val card: String        // "신한카드"
+    )
+
+    // 금액 패턴: 숫자 + 원 (쉼표 포함 가능)
+    private val AMOUNT_PATTERN = Pattern.compile("([\\d,]+)\\s*원")
+    
+    // 시간 패턴: HH:MM 또는 HH시MM분
+    private val TIME_PATTERN = Pattern.compile("(\\d{1,2}):(\\d{2})")
+    
+    // 날짜 패턴: MM/DD 또는 MM-DD 또는 M월D일
+    private val DATE_PATTERN = Pattern.compile("(\\d{1,2})[/\\-월](\\d{1,2})[일]?")
+
+    // 카드사 식별 패턴
+    private val CARD_PATTERNS = mapOf(
+        "신한" to "신한카드",
+        "농협" to "NH농협카드",
+        "현대" to "현대카드",
+        "하나" to "하나카드",
+        "이음" to "인천이음카드",
+        "부천" to "부천페이",
+    )
+
+    /**
+     * 알림 텍스트를 파싱하여 Transaction 객체를 반환합니다.
+     * 파싱에 실패하면 null을 반환합니다.
+     */
+    fun parse(text: String, packageName: String = ""): Transaction? {
+        try {
+            // 1) 금액 추출
+            val amount = extractAmount(text) ?: return null
+            
+            // 2) 카드사 식별
+            val card = identifyCard(text, packageName)
+            
+            // 3) 날짜 & 시간 추출
+            val date = extractDate(text)
+            val time = extractTime(text)
+            
+            // 4) 가맹점명 추출
+            val merchant = extractMerchant(text, amount, card)
+            
+            return Transaction(
+                date = date,
+                time = time,
+                amount = amount,
+                merchant = merchant,
+                card = card
+            )
+        } catch (e: Exception) {
+            Log.e(TAG, "파싱 중 오류: ${e.message}", e)
+            return null
+        }
+    }
+
+    /**
+     * 금액 추출 (쉼표 제거, 정수 변환)
+     */
+    private fun extractAmount(text: String): Int? {
+        val matcher = AMOUNT_PATTERN.matcher(text)
+        if (matcher.find()) {
+            val amountStr = matcher.group(1)?.replace(",", "") ?: return null
+            return amountStr.toIntOrNull()
+        }
+        return null
+    }
+
+    /**
+     * 카드사 식별 (텍스트 내 키워드 또는 패키지명 기반)
+     */
+    private fun identifyCard(text: String, packageName: String): String {
+        // 텍스트 기반 매칭
+        for ((keyword, cardName) in CARD_PATTERNS) {
+            if (text.contains(keyword)) return cardName
+        }
+        
+        // 패키지명 기반 매칭
+        return when {
+            packageName.contains("shinhan") -> "신한카드"
+            packageName.contains("nh") || packageName.contains("nonghyup") -> "NH농협카드"
+            packageName.contains("hyundai") -> "현대카드"
+            packageName.contains("hana") -> "하나카드"
+            packageName.contains("zzeung") || packageName.contains("iche") -> "인천이음카드"
+            else -> "기타카드"
+        }
+    }
+
+    /**
+     * 날짜 추출 (없으면 오늘 날짜)
+     */
+    private fun extractDate(text: String): String {
+        val matcher = DATE_PATTERN.matcher(text)
+        if (matcher.find()) {
+            val month = matcher.group(1)?.padStart(2, '0') ?: "01"
+            val day = matcher.group(2)?.padStart(2, '0') ?: "01"
+            val year = SimpleDateFormat("yyyy", Locale.KOREA).format(Date())
+            return "$year-$month-$day"
+        }
+        // 날짜가 없으면 오늘 날짜
+        return SimpleDateFormat("yyyy-MM-dd", Locale.KOREA).format(Date())
+    }
+
+    /**
+     * 시간 추출 (없으면 현재 시간)
+     */
+    private fun extractTime(text: String): String {
+        val matcher = TIME_PATTERN.matcher(text)
+        if (matcher.find()) {
+            val hour = matcher.group(1)?.padStart(2, '0') ?: "00"
+            val minute = matcher.group(2)?.padStart(2, '0') ?: "00"
+            return "$hour:$minute"
+        }
+        return SimpleDateFormat("HH:mm", Locale.KOREA).format(Date())
+    }
+
+    /**
+     * 가맹점명 추출
+     * 금액, 카드사명, 날짜/시간 등을 제거한 후 남은 텍스트에서 추출합니다.
+     */
+    private fun extractMerchant(text: String, amount: Int, card: String): String {
+        var cleaned = text
+        
+        // 불필요한 부분 제거
+        val removePatterns = listOf(
+            "\\[.*?\\]",                    // [신한카드] 등 대괄호
+            "\\d{1,2}[/\\-월]\\d{1,2}[일]?", // 날짜
+            "\\d{1,2}:\\d{2}",              // 시간
+            "[\\d,]+\\s*원",                // 금액
+            "님",                           // 존칭
+            "승인금액|결제금액|금액|승인|결제|사용|출금|이용|카드|누적|잔액", // 키워드
+            "일시불|할부",                   // 결제 방식
+            "오전|오후",                     // 시간 키워드
+            "\\*+",                         // 마스킹 문자
+            "[\\-\\:]",                     // 특수문자 (- 또는 :)
+            "\\(.*?\\)",                    // 괄호 안의 내용 모두 제거
+            "\\s{2,}",                      // 연속 공백
+        )
+        
+        for (pattern in removePatterns) {
+            cleaned = cleaned.replace(Regex(pattern), " ")
+        }
+        
+        // 카드사 키워드 제거
+        for ((keyword, _) in CARD_PATTERNS) {
+            cleaned = cleaned.replace(keyword, " ")
+        }
+        
+        // 이름(2~4글자 한글) 제거 시도
+        cleaned = cleaned.replace(Regex("[가-힣]{2,4}(?=\\s)"), " ")
+        
+        // 정리 후 남은 의미 있는 텍스트 추출
+        val trimmed = cleaned.trim().replace(Regex("\\s+"), " ").trim()
+        
+        return if (trimmed.isNotBlank()) trimmed else "알 수 없는 가맹점"
+    }
+}
