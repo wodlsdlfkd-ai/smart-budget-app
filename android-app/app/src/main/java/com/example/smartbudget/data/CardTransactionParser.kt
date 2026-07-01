@@ -49,14 +49,64 @@ object CardTransactionParser {
         "부천" to "부천페이",
     )
 
+    // 카드사별 전용 파서 매핑
+    private val PARSERS = mapOf(
+        "NH농협카드" to NhCardParser(),
+        "농협" to NhCardParser(),
+        "nh" to NhCardParser()
+    )
+
+    /**
+     * 알림 객체의 각 필드를 받아 적절한 파서로 라우팅합니다.
+     */
+    fun parseNotification(
+        packageName: String,
+        title: String,
+        text: String,
+        bigText: String,
+        textLines: String,
+        fullTextFallback: String
+    ): Transaction? {
+        val cardName = identifyCard(fullTextFallback, packageName)
+
+        // 1) 전용 파서가 있는지 확인
+        val parser = PARSERS[cardName] ?: PARSERS.entries.find { cardName.contains(it.key, ignoreCase = true) }?.value
+
+        if (parser != null) {
+            val transaction = parser.parse(title, text, bigText, textLines)
+            if (transaction != null) {
+                return transaction
+            }
+        }
+
+        // 2) 전용 파서가 없거나 실패한 경우 기존 범용 파서(fallback) 사용
+        // 범용 파서에서도 취소/환불인지 체크하여 음수로 처리하는 로직 추가
+        var amount = extractAmount(fullTextFallback) ?: return null
+        if (fullTextFallback.contains("취소") || fullTextFallback.contains("환불") || fullTextFallback.contains("-")) {
+            amount = -amount
+        }
+        
+        val date = extractDate(fullTextFallback)
+        val time = extractTime(fullTextFallback)
+        val merchant = extractMerchant(fullTextFallback, amount, cardName)
+        
+        return Transaction(
+            date = date,
+            time = time,
+            amount = amount,
+            merchant = merchant,
+            card = cardName
+        )
+    }
+
     /**
      * 알림 텍스트를 파싱하여 Transaction 객체를 반환합니다.
-     * 파싱에 실패하면 null을 반환합니다.
+     * 파싱에 실패하면 null을 반환합니다. (기존 하위 호환성 유지)
      */
     fun parse(text: String, packageName: String = ""): Transaction? {
         try {
             // 1) 금액 추출
-            val amount = extractAmount(text) ?: return null
+            var amount = extractAmount(text) ?: return null
             
             // 2) 카드사 식별
             val card = identifyCard(text, packageName)
@@ -68,6 +118,11 @@ object CardTransactionParser {
             // 4) 가맹점명 추출
             val merchant = extractMerchant(text, amount, card)
             
+            // 범용 파서에서도 취소/환불인지 체크하여 음수로 처리
+            if (text.contains("취소") || text.contains("환불") || text.contains("-")) {
+                amount = -amount
+            }
+
             return Transaction(
                 date = date,
                 time = time,

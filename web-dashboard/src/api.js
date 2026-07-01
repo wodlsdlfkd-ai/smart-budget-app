@@ -92,3 +92,49 @@ export async function testConnection(appsScriptUrl) {
     return { connected: false, error: error.message };
   }
 }
+
+/**
+ * 특정 결제 내역을 수정합니다.
+ */
+export async function editTransaction(appsScriptUrl, id, date, amount, category, merchant) {
+  if (!appsScriptUrl) {
+    throw new Error('Apps Script URL이 설정되지 않았습니다.');
+  }
+
+  const payload = {
+    action: 'edit',
+    id,        // 예: "r28"
+    date,
+    amount,
+    category,
+    merchant
+  };
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), API_TIMEOUT);
+
+  try {
+    const response = await fetch(appsScriptUrl, {
+      method: 'POST',
+      redirect: 'follow',
+      // 구글 앱스 스크립트에서는 text/plain으로 보내도 내용물을 e.postData.contents 로 읽을 수 있습니다.
+      // preflight(OPTIONS) 요청을 피하기 위해 Content-Type을 지정하지 않거나 text/plain 권장.
+      body: JSON.stringify(payload),
+      signal: controller.signal
+    });
+
+    if (!response.ok) {
+      throw new Error(`API 응답 오류: ${response.status}`);
+    }
+
+    const data = await response.json();
+
+    if (!data.success) {
+      throw new Error(data.error || '알 수 없는 오류');
+    }
+
+    return data.data;
+  } finally {
+    clearTimeout(timeout);
+  }
+}

@@ -85,22 +85,30 @@ class CardNotificationListener : NotificationListenerService() {
 
         // 알림 텍스트 추출
         val extras = sbn.notification?.extras ?: return
-        val title = extras.getCharSequence("android.title")?.toString() ?: ""
-        val text = extras.getCharSequence("android.text")?.toString() ?: ""
-        val bigText = extras.getCharSequence("android.bigText")?.toString() ?: ""
+        val title = extras.getCharSequence("android.title")?.toString()?.trim() ?: ""
+        val text = extras.getCharSequence("android.text")?.toString()?.trim() ?: ""
+        val bigText = extras.getCharSequence("android.bigText")?.toString()?.trim() ?: ""
         
-        // 여러 줄 알림(InboxStyle 등)인 경우
-        val textLines = extras.getCharSequenceArray("android.textLines")?.joinToString(" ") ?: ""
+        // 여러 줄 알림(InboxStyle 등)인 경우 줄바꿈으로 연결
+        val textLinesArray = extras.getCharSequenceArray("android.textLines")
+        val textLines = textLinesArray?.joinToString("\n")?.trim() ?: ""
         
-        val fullText = "$title $text $bigText $textLines"
+        val fullTextFallback = "$title $text $bigText ${textLinesArray?.joinToString(" ")}"
         
-        // 결제 관련 알림인지 확인
-        if (PAYMENT_KEYWORDS.none { fullText.contains(it) }) return
+        // 결제 관련 알림인지 대략 확인
+        if (PAYMENT_KEYWORDS.none { fullTextFallback.contains(it) } && !fullTextFallback.contains("취소") && !fullTextFallback.contains("환불")) return
         
-        Log.d(TAG, "카드 결제 알림 감지: [$packageName] $fullText")
+        Log.d(TAG, "카드 결제 알림 감지: [$packageName] title=$title, text=$text, bigText=$bigText, textLines=$textLines")
 
-        // 알림 텍스트 파싱
-        val transaction = CardTransactionParser.parse(fullText, packageName)
+        // 알림 텍스트 파싱 (새로운 라우팅 기반 파서 적용)
+        val transaction = CardTransactionParser.parseNotification(
+            packageName = packageName,
+            title = title,
+            text = text,
+            bigText = bigText,
+            textLines = textLines,
+            fullTextFallback = fullTextFallback
+        )
         
         if (transaction != null) {
             Log.i(TAG, "파싱 성공: ${transaction.card} ${transaction.amount}원 ${transaction.merchant}")

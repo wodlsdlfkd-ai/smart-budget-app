@@ -16,6 +16,12 @@
 </head>
 <body>
   <div id="app">
+    <!-- 풀스크린 로딩 오버레이 -->
+    <div class="loading-overlay" id="loadingOverlay">
+      <div class="loading-spinner"></div>
+      <p class="loading-text">최신 데이터를 불러오는 중...</p>
+    </div>
+
     <!-- 상단 헤더 -->
     <header class="app-header" id="appHeader">
       <div class="header-left">
@@ -208,6 +214,54 @@
           <div class="modal-actions">
             <button type="button" class="btn btn-secondary" id="modalCancelBtn">취소</button>
             <button type="submit" class="btn btn-primary">저장</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <!-- 결제 내역 수정 모달 -->
+    <div class="modal-overlay" id="transactionModal">
+      <div class="modal glass-card">
+        <div class="modal-header">
+          <h3 class="modal-title">결제 내역 수정</h3>
+          <button class="modal-close" id="transactionModalClose">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none"><path d="M18 6L6 18M6 6L18 18" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+          </button>
+        </div>
+        <form id="transactionForm" class="modal-form">
+          <input type="hidden" id="txEditId" />
+          <div class="form-group">
+            <label for="txDate">날짜</label>
+            <input type="text" id="txDate" placeholder="예: 2026-06-28" required />
+          </div>
+          <div class="form-group">
+            <label for="txAmount">지출금액 (음수는 수입)</label>
+            <input type="number" id="txAmount" required />
+          </div>
+          <div class="form-group">
+            <label for="txCategory">분류</label>
+            <select id="txCategory">
+              <option value="밥">밥</option>
+              <option value="육아">육아</option>
+              <option value="카페">카페</option>
+              <option value="쇼핑">쇼핑</option>
+              <option value="여가">여가</option>
+              <option value="마트">마트</option>
+              <option value="헌금">헌금</option>
+              <option value="병원">병원</option>
+              <option value="선물">선물</option>
+              <option value="기타">기타</option>
+              <option value="수입">수입</option>
+              <option value="공과금">공과금</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label for="txMerchant">내역 (가맹점명)</label>
+            <input type="text" id="txMerchant" required />
+          </div>
+          <div class="modal-actions">
+            <button type="button" class="btn btn-secondary" id="transactionModalCancelBtn">취소</button>
+            <button type="submit" class="btn btn-primary" id="transactionSaveBtn">수정 반영</button>
           </div>
         </form>
       </div>

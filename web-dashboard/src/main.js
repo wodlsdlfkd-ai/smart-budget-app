@@ -3,7 +3,7 @@
    ============================================ */
 
 import './style.css';
-import { getTransactions, testConnection } from './api.js';
+import { getTransactions, testConnection, editTransaction } from './api.js';
 
 // ==========================================
 // 1. 데이터 & 상태 관리
@@ -130,6 +130,16 @@ function showToast(message, type = 'success') {
   toast.textContent = message;
   container.appendChild(toast);
   setTimeout(() => toast.remove(), 3000);
+}
+
+function showLoading() {
+  const overlay = document.getElementById('loadingOverlay');
+  if (overlay) overlay.classList.add('active');
+}
+
+function hideLoading() {
+  const overlay = document.getElementById('loadingOverlay');
+  if (overlay) overlay.classList.remove('active');
 }
 
 function saveState() {
@@ -318,6 +328,8 @@ function renderTransactionList(txns) {
         <div class="transaction-time">${dateLabel} ${txn.time}</div>
       </div>
     `;
+    // 결제 내역 클릭 시 수정 모달 열기
+    el.addEventListener('click', () => openTransactionModal(txn));
     container.appendChild(el);
   });
 }
@@ -663,6 +675,88 @@ function deleteCard(cardId) {
 }
 
 // ==========================================
+// 8-1. 결제 내역 모달 (수정)
+// ==========================================
+
+function initTransactionModal() {
+  const modal = document.getElementById('transactionModal');
+  const closeBtn = document.getElementById('transactionModalClose');
+  const cancelBtn = document.getElementById('transactionModalCancelBtn');
+  const form = document.getElementById('transactionForm');
+
+  closeBtn.addEventListener('click', closeTransactionModal);
+  cancelBtn.addEventListener('click', closeTransactionModal);
+  modal.addEventListener('click', (e) => {
+    if (e.target === modal) closeTransactionModal();
+  });
+
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    if (!state.settings.appsScriptUrl) {
+      showToast('Apps Script URL이 설정되어 있지 않습니다.', 'error');
+      return;
+    }
+
+    const editId = document.getElementById('txEditId').value;
+    const date = document.getElementById('txDate').value;
+    const amountStr = document.getElementById('txAmount').value;
+    const category = document.getElementById('txCategory').value;
+    const merchant = document.getElementById('txMerchant').value;
+
+    const amount = parseInt(amountStr, 10);
+    if (isNaN(amount)) {
+      showToast('올바른 금액을 입력해주세요.', 'error');
+      return;
+    }
+
+    // 모달 닫기
+    closeTransactionModal();
+    showLoading();
+
+    try {
+      // API 호출
+      const result = await editTransaction(
+        state.settings.appsScriptUrl,
+        editId, // e.g. "r28"
+        date,
+        amount,
+        category,
+        merchant
+      );
+      
+      if (result) {
+        showToast('결제 내역이 성공적으로 수정되었습니다.');
+        // 서버 변경 후 최신 데이터 다시 로드
+        await loadFromApi();
+        saveState();
+        updateAll();
+      }
+    } catch (error) {
+      showToast('수정 실패: ' + error.message, 'error');
+    } finally {
+      hideLoading();
+    }
+  });
+}
+
+function openTransactionModal(txn) {
+  const modal = document.getElementById('transactionModal');
+  
+  // 폼 필드 채우기
+  document.getElementById('txEditId').value = txn.id;
+  document.getElementById('txDate').value = txn.date;
+  document.getElementById('txAmount').value = txn.amount;
+  document.getElementById('txCategory').value = txn.category;
+  document.getElementById('txMerchant').value = txn.merchant;
+  
+  modal.classList.add('active');
+}
+
+function closeTransactionModal() {
+  document.getElementById('transactionModal').classList.remove('active');
+}
+
+// ==========================================
 // 9. 설정 저장
 // ==========================================
 
@@ -742,6 +836,7 @@ async function init() {
   loadState();
   initNavigation();
   initCardModal();
+  initTransactionModal();
   initSettings();
 
   // 1. 로컬 데이터로 즉시 화면 렌더링 (로딩 지연 제거)
@@ -750,11 +845,14 @@ async function init() {
   // 2. 백그라운드에서 API 최신 데이터 로드
   if (state.settings.appsScriptUrl) {
     try {
+      showLoading();
       await loadFromApi();
       saveState();
       updateAll(); // 최신 데이터로 화면 갱신
     } catch (e) {
       console.warn('백그라운드 업데이트 실패', e);
+    } finally {
+      hideLoading();
     }
   }
 }

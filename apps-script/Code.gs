@@ -63,16 +63,26 @@ function doPost(e) {
   try {
     const data = JSON.parse(e.postData.contents);
     
+    // 수동 수정 분기
+    if (data.action === 'edit') {
+      return handleEditTransaction(data);
+    }
+    
     // 필수 필드 검증
-    if (!data.date || !data.amount || !data.merchant || !data.card) {
+    if (!data.date || typeof data.amount === 'undefined' || !data.merchant || !data.card) {
       return createJsonResponse({ 
         success: false, 
         error: '필수 필드 누락 (date, amount, merchant, card)' 
       });
     }
 
-    // 1) Gemini AI로 카테고리 자동 분류
-    const category = classifyCategory(data.merchant);
+    // 1) 환불/취소 검사 (amount < 0) 또는 Gemini AI로 카테고리 자동 분류
+    let category = '기타';
+    if (data.amount < 0) {
+      category = '수입';
+    } else {
+      category = classifyCategory(data.merchant);
+    }
 
     // 2) 해당 월의 시트 가져오기 (없으면 자동 생성)
     const sheet = getOrCreateMonthlySheet(data.date);
@@ -106,6 +116,38 @@ function doPost(e) {
       error: error.toString() 
     });
   }
+}
+
+/**
+ * 대시보드에서 보낸 결제 내역 수정(POST)을 처리합니다.
+ */
+function handleEditTransaction(data) {
+  if (!data.id || !data.date || typeof data.amount === 'undefined' || !data.category || !data.merchant) {
+    return createJsonResponse({ success: false, error: '필수 수정 필드 누락' });
+  }
+
+  const row = parseInt(data.id.replace('r', ''), 10);
+  if (isNaN(row)) {
+    return createJsonResponse({ success: false, error: '잘못된 ID 형식' });
+  }
+
+  // 날짜 기반으로 대상 시트 찾기 (YYYY-MM-DD -> YYYY.MM)
+  const dateParts = data.date.split('-');
+  const sheetName = `${dateParts[0]}.${dateParts[1]}`;
+  
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = ss.getSheetByName(sheetName);
+  
+  if (!sheet) {
+    return createJsonResponse({ success: false, error: '해당 월의 시트를 찾을 수 없습니다.' });
+  }
+
+  sheet.getRange(row, COLUMNS.DATE).setValue(data.date);
+  sheet.getRange(row, COLUMNS.AMOUNT).setValue(data.amount);
+  sheet.getRange(row, COLUMNS.CATEGORY).setValue(data.category);
+  sheet.getRange(row, COLUMNS.MERCHANT).setValue(data.merchant);
+
+  return createJsonResponse({ success: true, message: '수정 완료' });
 }
 
 
