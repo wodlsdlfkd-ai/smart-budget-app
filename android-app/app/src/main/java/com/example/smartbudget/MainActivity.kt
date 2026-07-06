@@ -361,6 +361,13 @@ fun StatusCard(isEnabled: Boolean) {
                 color = Color.White.copy(alpha = 0.9f),
                 textAlign = TextAlign.Center
             )
+            Spacer(modifier = Modifier.height(8.dp))
+            Text(
+                text = "v1.3 (빌드: 2026-07-06 10:23)",
+                fontSize = 11.sp,
+                color = Color.White.copy(alpha = 0.6f),
+                textAlign = TextAlign.Center
+            )
         }
     }
 }

@@ -3,7 +3,7 @@
    ============================================ */
 
 import './style.css';
-import { getTransactions, testConnection, editTransaction } from './api.js';
+import { getTransactions, testConnection, editTransaction, deleteTransaction } from './api.js';
 
 // ==========================================
 // 1. 데이터 & 상태 관리
@@ -262,16 +262,20 @@ function renderCardScroll(txns) {
     const hasLimit = card.limit > 0;
     const percent = hasLimit ? Math.min((cardTotal / card.limit) * 100, 100) : 0;
 
+    // Dynamic color logic
+    let displayColor = hasLimit ? '#ffffff' : '#3b82f6';
+    if (hasLimit && percent >= 100) displayColor = '#ef4444';
+
     const el = document.createElement('div');
     el.className = 'card-mini';
     el.style.cssText = `animation-delay: ${index * 0.05}s;`;
     el.innerHTML = `
-      <div style="position:absolute;top:0;left:0;right:0;height:3px;background:${card.color};border-radius:16px 16px 0 0;"></div>
+      <div style="position:absolute;top:0;left:0;right:0;height:3px;background:${displayColor};border-radius:16px 16px 0 0;"></div>
       <div class="card-mini-name">${card.name}</div>
-      <div class="card-mini-amount" style="color:${card.color}">${formatCurrency(cardTotal)}</div>
+      <div class="card-mini-amount" style="color:${displayColor}">${formatCurrency(cardTotal)}</div>
       ${hasLimit ? `
         <div class="card-mini-progress">
-          <div class="card-mini-progress-fill" style="width:${percent}%;background:${card.color};"></div>
+          <div class="card-mini-progress-fill" style="width:${percent}%;background:${displayColor};"></div>
         </div>
         <div class="card-mini-limit">/ ${formatCurrency(card.limit)}</div>
       ` : `
@@ -350,30 +354,30 @@ function renderCards() {
     const percent = hasLimit ? Math.min((cardTotal / card.limit) * 100, 100) : 0;
     const remaining = hasLimit ? card.limit - cardTotal : 0;
 
+    // Dynamic color logic
+    let displayColor = hasLimit ? '#ffffff' : '#3b82f6';
+    if (hasLimit && percent >= 100) displayColor = '#ef4444';
+
     const el = document.createElement('div');
     el.className = 'card-full';
     el.style.animationDelay = `${index * 0.06}s`;
 
-    let progressColor = card.color;
-    if (hasLimit && percent >= 100) progressColor = '#10b981';
-    else if (hasLimit && percent >= 80) progressColor = '#f59e0b';
-
     el.innerHTML = `
-      <div style="position:absolute;top:0;left:0;right:0;height:4px;background:${card.color};"></div>
+      <div style="position:absolute;top:0;left:0;right:0;height:4px;background:${displayColor};"></div>
       <div class="card-full-header">
         <span class="card-full-name">${card.name}</span>
         <span class="card-full-type">${card.type === 'credit' ? '신용카드' : '지역화폐'}</span>
       </div>
       <div class="card-full-amount-row">
-        <span class="card-full-amount" style="color:${card.color}">${formatCurrency(cardTotal)}</span>
+        <span class="card-full-amount" style="color:${displayColor}">${formatCurrency(cardTotal)}</span>
         ${hasLimit ? `<span class="card-full-limit-label">/ ${formatCurrency(card.limit)}</span>` : ''}
       </div>
       ${hasLimit ? `
         <div class="card-full-progress">
-          <div class="card-full-progress-fill" style="width:${percent}%;background:${progressColor};"></div>
+          <div class="card-full-progress-fill" style="width:${percent}%;background:${displayColor};"></div>
         </div>
         <div class="card-full-footer">
-          <span class="card-full-percent" style="color:${progressColor}">${percent.toFixed(1)}% 달성</span>
+          <span class="card-full-percent" style="color:${displayColor}">${percent.toFixed(1)}% 달성</span>
           <span class="card-full-remaining">${remaining > 0 ? formatCurrency(remaining) + ' 남음' : '✅ 실적 달성!'}</span>
         </div>
       ` : `
@@ -682,12 +686,51 @@ function initTransactionModal() {
   const modal = document.getElementById('transactionModal');
   const closeBtn = document.getElementById('transactionModalClose');
   const cancelBtn = document.getElementById('transactionModalCancelBtn');
+  const deleteBtn = document.getElementById('transactionDeleteBtn');
   const form = document.getElementById('transactionForm');
 
   closeBtn.addEventListener('click', closeTransactionModal);
   cancelBtn.addEventListener('click', closeTransactionModal);
   modal.addEventListener('click', (e) => {
     if (e.target === modal) closeTransactionModal();
+  });
+
+  // 삭제 버튼 로직
+  deleteBtn.addEventListener('click', async () => {
+    if (!state.settings.appsScriptUrl) {
+      showToast('Apps Script URL이 설정되어 있지 않습니다.', 'error');
+      return;
+    }
+
+    const editId = document.getElementById('txEditId').value;
+    const date = document.getElementById('txDate').value;
+    const merchant = document.getElementById('txMerchant').value;
+
+    if (!confirm(`정말 "${merchant}" 내역을 삭제하시겠습니까?`)) {
+      return;
+    }
+
+    closeTransactionModal();
+    showLoading();
+
+    try {
+      const result = await deleteTransaction(
+        state.settings.appsScriptUrl,
+        editId,
+        date
+      );
+      
+      if (result) {
+        showToast('결제 내역이 성공적으로 삭제되었습니다.');
+        await loadFromApi();
+        saveState();
+        updateAll();
+      }
+    } catch (error) {
+      showToast('삭제 실패: ' + error.message, 'error');
+    } finally {
+      hideLoading();
+    }
   });
 
   form.addEventListener('submit', async (e) => {
@@ -702,6 +745,8 @@ function initTransactionModal() {
     const amountStr = document.getElementById('txAmount').value;
     const category = document.getElementById('txCategory').value;
     const merchant = document.getElementById('txMerchant').value;
+    const cardSelect = document.getElementById('txCard');
+    const card = cardSelect.options[cardSelect.selectedIndex]?.text || '';
 
     const amount = parseInt(amountStr, 10);
     if (isNaN(amount)) {
@@ -721,7 +766,8 @@ function initTransactionModal() {
         date,
         amount,
         category,
-        merchant
+        merchant,
+        card
       );
       
       if (result) {
@@ -748,6 +794,19 @@ function openTransactionModal(txn) {
   document.getElementById('txAmount').value = txn.amount;
   document.getElementById('txCategory').value = txn.category;
   document.getElementById('txMerchant').value = txn.merchant;
+  
+  // 카드사 목록 생성
+  const cardSelect = document.getElementById('txCard');
+  cardSelect.innerHTML = '';
+  state.cards.forEach(card => {
+    const option = document.createElement('option');
+    option.value = card.id;
+    option.textContent = card.name;
+    if (card.id === txn.cardId) {
+      option.selected = true;
+    }
+    cardSelect.appendChild(option);
+  });
   
   modal.classList.add('active');
 }

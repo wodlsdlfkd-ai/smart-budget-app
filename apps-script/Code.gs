@@ -18,13 +18,14 @@
 // ==========================================
 
 /** Gemini API 키 (https://aistudio.google.com/apikey 에서 발급) */
-const GEMINI_API_KEY = 'YOUR_GEMINI_API_KEY_HERE';
+const GEMINI_API_KEY = 'AIzaSyBWGfaAD__xRq56dMt4ATCl_sR-PRS0ijk';
 
 /** "빈양식" 시트 탭 이름 (기존 스프레드시트의 템플릿 탭 이름과 동일해야 함) */
 const TEMPLATE_SHEET_NAME = '빈양식';
 
-/** 월 초기 통장잔액 (빈양식에 이미 설정되어 있다면 0으로 두세요) */
-const DEFAULT_INITIAL_BALANCE = 1250000;
+/** 텔레그램 연동 설정 (챗봇 프로젝트에서 가져옴) */
+const TELEGRAM_BOT_TOKEN = '8920086102:AAFv6jLpC6doqaQ5AgKf0P3PeTy3ZEFB1e0';
+const TELEGRAM_CHANNEL_ID = '-1003943179340';
 
 /** 카테고리 목록 (Gemini AI가 이 목록 중에서만 선택합니다) */
 const CATEGORIES = ['밥', '육아', '카페', '쇼핑', '여가', '마트', '헌금', '병원', '선물', '기타', '수입', '공과금'];
@@ -63,9 +64,12 @@ function doPost(e) {
   try {
     const data = JSON.parse(e.postData.contents);
     
-    // 수동 수정 분기
+    // 수동 수정/삭제 분기
     if (data.action === 'edit') {
       return handleEditTransaction(data);
+    }
+    if (data.action === 'delete') {
+      return handleDeleteTransaction(data);
     }
     
     // 필수 필드 검증
@@ -94,8 +98,11 @@ function doPost(e) {
     sheet.getRange(newRow, COLUMNS.CATEGORY).setValue(category);
     sheet.getRange(newRow, COLUMNS.MERCHANT).setValue(data.merchant + (data.time ? ` (${data.time})` : ''));
     sheet.getRange(newRow, COLUMNS.CARD).setValue(data.card);
+    
+    // 4) 텔레그램 예산 알림 확인 (N27 시트 기준)
+    checkBudgetAlert(sheet);
 
-    // 4) 성공 응답
+    // 5) 성공 응답
     return createJsonResponse({
       success: true,
       message: '기록 완료',
@@ -122,7 +129,7 @@ function doPost(e) {
  * 대시보드에서 보낸 결제 내역 수정(POST)을 처리합니다.
  */
 function handleEditTransaction(data) {
-  if (!data.id || !data.date || typeof data.amount === 'undefined' || !data.category || !data.merchant) {
+  if (!data.id || !data.date || typeof data.amount === 'undefined' || !data.category || !data.merchant || !data.card) {
     return createJsonResponse({ success: false, error: '필수 수정 필드 누락' });
   }
 
@@ -146,8 +153,42 @@ function handleEditTransaction(data) {
   sheet.getRange(row, COLUMNS.AMOUNT).setValue(data.amount);
   sheet.getRange(row, COLUMNS.CATEGORY).setValue(data.category);
   sheet.getRange(row, COLUMNS.MERCHANT).setValue(data.merchant);
+  sheet.getRange(row, COLUMNS.CARD).setValue(data.card);
 
   return createJsonResponse({ success: true, message: '수정 완료' });
+}
+
+/**
+ * 대시보드에서 보낸 결제 내역 삭제(POST)를 처리합니다.
+ * 안전을 위해 행을 지우지 않고 내용만 빈칸으로 만듭니다.
+ */
+function handleDeleteTransaction(data) {
+  if (!data.id || !data.date) {
+    return createJsonResponse({ success: false, error: '필수 삭제 필드 누락' });
+  }
+
+  const row = parseInt(data.id.replace('r', ''), 10);
+  if (isNaN(row)) {
+    return createJsonResponse({ success: false, error: '잘못된 ID 형식' });
+  }
+
+  const dateParts = data.date.split('-');
+  const sheetName = `${dateParts[0]}.${dateParts[1]}`;
+  
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = ss.getSheetByName(sheetName);
+  
+  if (!sheet) {
+    return createJsonResponse({ success: false, error: '해당 월의 시트를 찾을 수 없습니다.' });
+  }
+
+  sheet.getRange(row, COLUMNS.DATE).clearContent();
+  sheet.getRange(row, COLUMNS.AMOUNT).clearContent();
+  sheet.getRange(row, COLUMNS.CATEGORY).clearContent();
+  sheet.getRange(row, COLUMNS.MERCHANT).clearContent();
+  sheet.getRange(row, COLUMNS.CARD).clearContent();
+
+  return createJsonResponse({ success: true, message: '삭제 완료' });
 }
 
 
@@ -241,7 +282,7 @@ function getTransactions(year, month) {
     }
 
     const numericAmount = Number(amount) || 0;
-    total += numericAmount;
+    if (numericAmount > 0) total += numericAmount; // 순지출만 합산 (취소 건 제외)
 
     transactions.push({
       id: `r${row}`,
@@ -387,62 +428,81 @@ function findNextEmptyRow(sheet) {
  * @returns {string} 분류된 카테고리 (예: "카페")
  */
 function classifyCategory(merchant) {
-  // API 키가 설정되지 않은 경우 기본값 반환
+  const m = String(merchant);
+
+  // ── 1차: 키워드 기반 즉시 분류 ──────────────────────────
+  const KEYWORD_MAP = {
+    '밥':    ['식당','음식점','한식','중식','일식','양식','치킵','피자','버거','맥도날드','롯데리아','KFC','버거킵',
+              '맘스터치','스시','라면','분식','국밥','갈비','삼격살','설렇탕','해장국','김밥','순대','호프',
+              '배달의민족','요기요','쿠팡이츠','포차','고기','식육','반찬','도시락','백반','냉면','칼국수',
+              '찌개','회집','초밥','샴브','휘교','양꽃로치','곱창','족발','보쥐','새우','해산물','생선',
+              '소문난','난양','해장','경양식','정식','먹자','먹거리'],
+    '카페': ['스타벅스','카페','베이커리','빵','투쎌','콤포즈','메가커피','커피','디저트','케이크','마카롱',
+              '브런치','파리바게트','띄레주르','던킨','배스킨','아이스크림','할리스','폴바셋','앤제리너스',
+              '이디야','탐앤탑스','공차','주스','음료','버블티'],
+    '쇼핑': ['쿠팡','11번가','네이버페이','G마켓','옥션','SSG','ssg','올리브영','다이소','유니클로','자라',
+              '무신사','에이블리','지그재그','아이디어스','오늘의집','인터파크','위메프','티몳',
+              '롤데백화점','현대백화점','신세계','갤러리아','AK플라자','이케아','편의점','CU','GS25',
+              '세븐일레븐','미니스톱','이마트24','나이키','아디다스','뉴발란스','ABC마트','효성에프엠에스'],
+    '마트': ['이마트','홈플러스','롯데마트','코스트코','하나로마트','농협마트','메가마트','킴스클럽',
+              '노브랜드','트레이더스'],
+    '여가': ['CGV','롯데시네마','메가박스','cgv','씨지브이','헬스장','피트니스','볼링','노래방','노래연습',
+              'PC방','게임','레저','수영','골프','테니스','당구','스크린','스크린골프','짔질방','사우나','스파','마사지',
+              '여행','관광','숙박','호텔','모텔','펙션','에어비앤비'],
+    '병원': ['의원','병원','약국','치과','한의원','안과','이비인후과','피부과','성형','산부인과',
+              '소아과','정형외과','내과','외과','신경과','정신건강','클리닉','메디컴','헬스케어','의료'],
+    '공과금':['전기','수도','가스비','도시가스','통신비','인터넷','SKT','KT','LG유플러스','관리비',
+              '아파트','세금','국민연금','건강보험','고지서'],
+    '육아':  ['유치원','어린이집','학원','학습지','교육','학용품','장난감','유아','어린이','키즈',
+              '아기','분유','기저귀'],
+    '헌금':  ['교회','성당','절','헌금','십일조','봉헌'],
+    '선물':  ['꽃집','플라워','선물','기프티콘','상품권','기프트']
+  };
+
+  const lowerM = m.toLowerCase();
+  for (const category in KEYWORD_MAP) {
+    const keywords = KEYWORD_MAP[category];
+    for (let i = 0; i < keywords.length; i++) {
+      if (lowerM.indexOf(keywords[i].toLowerCase()) !== -1) {
+        Logger.log('[키워드 분류] "' + m + '" -> "' + category + '" (키워드: ' + keywords[i] + ')');
+        return category;
+      }
+    }
+  }
+
+  // ── 2차: Gemini AI 분류 (키워드 미매칭 시) ──────────────
   if (!GEMINI_API_KEY || GEMINI_API_KEY === 'YOUR_GEMINI_API_KEY_HERE') {
-    Logger.log('Gemini API 키가 설정되지 않아 "기타"로 분류합니다.');
+    Logger.log('[Gemini 없음] "' + m + '" -> "기타"');
     return '기타';
   }
 
   try {
-    const prompt = `다음 결제 가맹점명을 보고, 아래 카테고리 목록 중 가장 적절한 카테고리 하나만 답하세요. 카테고리명만 답하고 다른 설명은 하지 마세요.
-
-카테고리 목록: ${CATEGORIES.join(', ')}
-
-가맹점명: ${merchant}
-
-답변:`;
-
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_API_KEY}`;
-    
+    const prompt = '다음 결제 가맹점명을 보고, 아래 카테고리 목록 중 가장 적절한 카테고리 하나만 답하세요. 카테고리명만 답하고 다른 설명은 하지 마세요.\n\n카테고리 목록: ' + CATEGORIES.join(', ') + '\n\n가맹점명: ' + m + '\n\n답변:';
+    const url = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=' + GEMINI_API_KEY;
     const payload = {
-      contents: [{
-        parts: [{ text: prompt }]
-      }],
-      generationConfig: {
-        temperature: 0.1,
-        maxOutputTokens: 10
-      }
+      contents: [{ parts: [{ text: prompt }] }],
+      generationConfig: { temperature: 0.1, maxOutputTokens: 10 }
     };
-
-    const options = {
-      method: 'post',
-      contentType: 'application/json',
-      payload: JSON.stringify(payload),
-      muteHttpExceptions: true
-    };
+    const options = { method: 'post', contentType: 'application/json', payload: JSON.stringify(payload), muteHttpExceptions: true };
 
     const response = UrlFetchApp.fetch(url, options);
-    const json = JSON.parse(response.getContentText());
+    const responseText = response.getContentText();
+    const json = JSON.parse(responseText);
 
     if (json.candidates && json.candidates[0] && json.candidates[0].content) {
       const answer = json.candidates[0].content.parts[0].text.trim();
-      
-      // 응답이 유효한 카테고리인지 확인
-      const matched = CATEGORIES.find(function(cat) {
-        return answer.includes(cat);
-      });
-      
+      const matched = CATEGORIES.find(function(cat) { return answer.indexOf(cat) !== -1; });
       if (matched) {
-        Logger.log(`카테고리 분류: "${merchant}" → "${matched}"`);
+        Logger.log('[Gemini 분류] "' + m + '" -> "' + matched + '"');
         return matched;
       }
+      Logger.log('[Gemini 매칭 실패] 응답: "' + answer + '" -> "기타"');
+    } else {
+      Logger.log('[Gemini API 오류] 응답: ' + responseText.substring(0, 200));
     }
-
-    Logger.log(`카테고리 분류 실패 (기타로 처리): "${merchant}"`);
     return '기타';
-
   } catch (error) {
-    Logger.log(`Gemini API 오류: ${error.toString()}`);
+    Logger.log('[Gemini 예외] ' + error.toString());
     return '기타';
   }
 }
@@ -509,7 +569,180 @@ function createJsonResponse(data) {
 
 
 // ==========================================
-// 7. 테스트 함수 (개발용)
+// 7. 텔레그램 알림 발송 함수
+// ==========================================
+
+/**
+ * 텔레그램으로 메시지를 발송합니다.
+ */
+function sendToTelegram(text) {
+  if (!TELEGRAM_BOT_TOKEN || TELEGRAM_BOT_TOKEN === '') return;
+  
+  const textUrl = "https://api.telegram.org/bot" + TELEGRAM_BOT_TOKEN + "/sendMessage";
+  const payload = { 
+    "chat_id": TELEGRAM_CHANNEL_ID.toString(), 
+    "text": text, 
+    "parse_mode": "HTML" 
+  };
+  
+  const options = {
+    "method": "post",
+    "contentType": "application/json",
+    "payload": JSON.stringify(payload),
+    "muteHttpExceptions": true
+  };
+  
+  try {
+    UrlFetchApp.fetch(textUrl, options);
+  } catch(e) {
+    Logger.log("Telegram 발송 에러: " + e.message);
+  }
+}
+
+/**
+ * 시트의 이번 달 총 지출을 N27 셀의 예산과 비교하여 알림을 보냅니다.
+ * 구간: 50%, 70%, 90%, 100%
+ */
+function checkBudgetAlert(sheet) {
+  const budget = Number(sheet.getRange('N27').getValue());
+  if (!budget || budget <= 0) return; // N27 셀에 예산이 없으면 무시
+
+  const lastRow = sheet.getLastRow();
+  if (lastRow < DATA_START_ROW) return;
+
+  let totalSpent = 0;
+  const amounts = sheet.getRange(DATA_START_ROW, COLUMNS.AMOUNT, lastRow - DATA_START_ROW + 1, 1).getValues();
+  for (let i = 0; i < amounts.length; i++) {
+    const amount = Number(amounts[i][0]) || 0;
+    if (amount > 0) totalSpent += amount; // 수입(마이너스) 제외 여부는 선택사항
+  }
+
+  const percent = Math.floor((totalSpent / budget) * 100);
+  const milestones = [100, 90, 70, 50];
+  let hitMilestone = null;
+
+  for (let i = 0; i < milestones.length; i++) {
+    if (percent >= milestones[i]) {
+      hitMilestone = milestones[i];
+      break;
+    }
+  }
+
+  if (hitMilestone) {
+    const props = PropertiesService.getScriptProperties();
+    const monthKey = "budget_alert_" + sheet.getName();
+    const lastAlerted = Number(props.getProperty(monthKey)) || 0;
+
+    if (hitMilestone > lastAlerted) {
+      let msg = "⚠️ <b>[가계부 예산 경고]</b>\n\n";
+      if (hitMilestone === 100) {
+        msg += "이번 달 총 지출이 설정하신 예산을 <b>초과(100%)</b>했습니다!\n\n";
+      } else {
+        msg += "이번 달 총 지출이 예산의 <b>" + hitMilestone + "%</b>에 도달했습니다!\n\n";
+      }
+      msg += "현재 총 지출: " + totalSpent.toLocaleString() + "원\n";
+      msg += "이번 달 예산: " + budget.toLocaleString() + "원 (" + percent + "% 사용)\n";
+      msg += "남은 예산: " + Math.max(0, budget - totalSpent).toLocaleString() + "원";
+      
+      sendToTelegram(msg);
+      props.setProperty(monthKey, hitMilestone.toString()); // 알림 발송 기록
+    }
+  }
+}
+
+/**
+ * 매일 저녁 9시에 실행되어 오늘의 지출 내역을 텔레그램으로 보냅니다.
+ */
+function sendDailyReport() {
+  const today = new Date();
+  const year = today.getFullYear();
+  const month = today.getMonth() + 1;
+  const sheetName = year + "." + String(month).padStart(2, '0');
+  
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = ss.getSheetByName(sheetName);
+  
+  if (!sheet) return;
+  
+  const dateStr = Utilities.formatDate(today, Session.getScriptTimeZone(), 'yyyy-MM-dd');
+  const lastRow = sheet.getLastRow();
+  
+  if (lastRow < DATA_START_ROW) return;
+  
+  let todaySpent = 0;
+  let todayCount = 0;
+  let todayTransactions = [];
+  let totalSpent = 0;
+  
+  // 10열(DATE)부터 15열(CARD)까지 가져오기 (총 6열)
+  const data = sheet.getRange(DATA_START_ROW, COLUMNS.DATE, lastRow - DATA_START_ROW + 1, 6).getValues();
+  
+  for (let i = 0; i < data.length; i++) {
+    const rowDate = data[i][0];
+    if (!rowDate) continue;
+    
+    let rDateStr = "";
+    if (rowDate instanceof Date) {
+      rDateStr = Utilities.formatDate(rowDate, Session.getScriptTimeZone(), 'yyyy-MM-dd');
+    } else {
+      rDateStr = String(rowDate).replace(/\./g, '-');
+    }
+    
+    const amount = Number(data[i][1]) || 0;
+    if (amount > 0) totalSpent += amount;
+    
+    if (rDateStr === dateStr) {
+      todaySpent += amount;
+      todayCount++;
+      const merchant = String(data[i][3]).replace(/\s*\(\d{1,2}:\d{2}\)/, ''); // 시간 제거
+      todayTransactions.push("• " + merchant + " : " + amount.toLocaleString() + "원");
+    }
+  }
+  
+  const budget = Number(sheet.getRange('N27').getValue());
+  
+  let msg = "💳 <b>[오늘의 지출 요약 리포트]</b>\n\n";
+  msg += "오늘 총 " + todayCount + "건, <b>" + todaySpent.toLocaleString() + "원</b> 사용\n\n";
+  
+  if (todayCount > 0) {
+    msg += todayTransactions.join("\n") + "\n\n";
+  } else {
+    msg += "오늘은 지출이 없습니다! 절약왕 👑\n\n";
+  }
+  
+  if (budget > 0) {
+    const percent = Math.floor((totalSpent / budget) * 100);
+    msg += "이번 달 누적: " + totalSpent.toLocaleString() + "원 / 예산 " + budget.toLocaleString() + "원 (" + percent + "%)";
+  } else {
+    msg += "이번 달 누적: " + totalSpent.toLocaleString() + "원";
+  }
+  
+  sendToTelegram(msg);
+}
+
+/**
+ * 일일 리포트 알림을 위한 시간 트리거를 설정합니다. (최초 1회 수동 실행)
+ */
+function setupDailyReportTrigger() {
+  const triggers = ScriptApp.getProjectTriggers();
+  for (let i = 0; i < triggers.length; i++) {
+    if (triggers[i].getHandlerFunction() === 'sendDailyReport') {
+      ScriptApp.deleteTrigger(triggers[i]);
+    }
+  }
+  
+  // 매일 밤 9시(21:00) 즈음에 실행
+  ScriptApp.newTrigger('sendDailyReport')
+           .timeBased()
+           .atHour(21)
+           .everyDays(1)
+           .create();
+           
+  Logger.log("일일 리포트 시간 트리거(매일 21시)가 설정되었습니다.");
+}
+
+// ==========================================
+// 8. 테스트 함수 (개발용)
 // ==========================================
 
 /**

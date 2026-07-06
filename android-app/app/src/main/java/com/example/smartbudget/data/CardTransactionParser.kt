@@ -39,21 +39,39 @@ object CardTransactionParser {
     // 날짜 패턴: MM/DD 또는 MM-DD 또는 M월D일
     private val DATE_PATTERN = Pattern.compile("(\\d{1,2})[/\\-월](\\d{1,2})[일]?")
 
-    // 카드사 식별 패턴
+    // 카드사 식별 패턴 (텍스트 폴백용)
     private val CARD_PATTERNS = mapOf(
-        "신한" to "신한카드",
-        "농협" to "NH농협카드",
-        "현대" to "현대카드",
-        "하나" to "하나카드",
-        "이음" to "인천이음카드",
-        "부천" to "부천페이",
+        "신한카드" to "신한카드",
+        "NH농협카드" to "NH농협카드",
+        "현대카드" to "현대카드",
+        "하나카드" to "하나카드",
+        "인천이음" to "인천이음카드",
+        "이음카드" to "인천이음카드",
+        "부천페이" to "부천페이",
+        "코나카드" to "코나카드",
+        "KB국민" to "KB국민카드",
+        "국민카드" to "KB국민카드"
     )
 
     // 카드사별 전용 파서 매핑
     private val PARSERS = mapOf(
         "NH농협카드" to NhCardParser(),
         "농협" to NhCardParser(),
-        "nh" to NhCardParser()
+        "nh" to NhCardParser(),
+        "하나카드" to HanaCardParser(),
+        "하나" to HanaCardParser(),
+        "hana" to HanaCardParser(),
+        "현대카드" to HyundaiCardParser(),
+        "현대" to HyundaiCardParser(),
+        "hyundai" to HyundaiCardParser(),
+        "신한카드" to ShinhanCardParser(),
+        "shinhan" to ShinhanCardParser(),
+        "부천페이" to BucheonsPayParser(),
+        "gyeonggi" to BucheonsPayParser(),
+        "인천이음카드" to IncheonEumCardParser(),
+        "인천이음" to IncheonEumCardParser(),
+        "zzeung" to IncheonEumCardParser(),
+        "iche" to IncheonEumCardParser()
     )
 
     /**
@@ -152,20 +170,33 @@ object CardTransactionParser {
      * 카드사 식별 (텍스트 내 키워드 또는 패키지명 기반)
      */
     private fun identifyCard(text: String, packageName: String): String {
-        // 텍스트 기반 매칭
-        for ((keyword, cardName) in CARD_PATTERNS) {
-            if (text.contains(keyword)) return cardName
-        }
-        
-        // 패키지명 기반 매칭
-        return when {
+        // 1. 패키지명 기반 매칭 (우선순위 1)
+        val packageBasedCard = when {
             packageName.contains("shinhan") -> "신한카드"
             packageName.contains("nh") || packageName.contains("nonghyup") -> "NH농협카드"
             packageName.contains("hyundai") -> "현대카드"
             packageName.contains("hana") -> "하나카드"
             packageName.contains("zzeung") || packageName.contains("iche") -> "인천이음카드"
-            else -> "기타카드"
+            packageName.contains("kbstar") || packageName.contains("kbcard") -> "KB국민카드"
+            packageName.contains("konai") -> "코나카드"
+            packageName.contains("gyeonggi") -> {
+                // 경기지역화폐는 앱 하나로 여러 지자체 페이를 관리하므로 텍스트로 보완
+                if (text.contains("부천페이")) "부천페이"
+                else if (text.contains("수원페이")) "수원페이"
+                else if (text.contains("김포페이")) "김포페이"
+                else "경기지역화폐"
+            }
+            else -> null
         }
+        
+        if (packageBasedCard != null) return packageBasedCard
+
+        // 2. 텍스트 기반 매칭 (우선순위 2 - SMS 문자 등)
+        for ((keyword, cardName) in CARD_PATTERNS) {
+            if (text.contains(keyword)) return cardName
+        }
+        
+        return "기타카드"
     }
 
     /**
@@ -214,7 +245,7 @@ object CardTransactionParser {
             "일시불|할부",                   // 결제 방식
             "오전|오후",                     // 시간 키워드
             "\\*+",                         // 마스킹 문자
-            "[\\-\\:]",                     // 특수문자 (- 또는 :)
+            "[\\-\\:\\/\\,]",               // 특수문자 (- : / ,)
             "\\(.*?\\)",                    // 괄호 안의 내용 모두 제거
             "\\s{2,}",                      // 연속 공백
         )

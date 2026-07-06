@@ -54,6 +54,9 @@ class CardNotificationListener : NotificationListenerService() {
         
         // 결제 관련 키워드 (알림 텍스트에 이 중 하나라도 포함되어야 함)
         val PAYMENT_KEYWORDS = listOf("승인", "결제", "사용", "출금", "이용")
+        
+        // 중복 방지 캐시
+        private val recentTransactions = mutableSetOf<String>()
     }
 
     private val serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
@@ -111,38 +114,73 @@ class CardNotificationListener : NotificationListenerService() {
         )
         
         if (transaction != null) {
+            // 중복 알림 방지 (동일 가맹점, 동일 금액, 동일 날짜, 동일 시간)
+            val txHash = "${transaction.card}_${transaction.amount}_${transaction.merchant}_${transaction.date}_${transaction.time}"
+            if (recentTransactions.contains(txHash)) {
+                Log.d(TAG, "중복된 알림 무시 (이미 처리됨): $txHash")
+                return
+            }
+            recentTransactions.add(txHash)
+            if (recentTransactions.size > 100) {
+                val iterator = recentTransactions.iterator()
+                iterator.next()
+                iterator.remove()
+            }
+            
             Log.i(TAG, "파싱 성공: ${transaction.card} ${transaction.amount}원 ${transaction.merchant}")
             
             // Apps Script 웹훅으로 전송
             serviceScope.launch {
                 val webhookUrl = SettingsRepository.getWebhookUrl(applicationContext)
                 if (webhookUrl.isNotBlank()) {
-                    val success = WebhookSender.send(webhookUrl, transaction)
+                    var success = WebhookSender.send(webhookUrl, transaction)
+                    
+                    // 1회 재시도 로직
+                    if (!success) {
+                        Log.w(TAG, "웹훅 전송 1차 실패, 3초 후 재시도합니다.")
+                        kotlinx.coroutines.delay(3000)
+                        success = WebhookSender.send(webhookUrl, transaction)
+                    }
+
                     if (success) {
-                        showSuccessNotification(transaction)
+                        showNotification("가계부 자동 기록 완료 📝", "${transaction.merchant}에서 ${transaction.amount}원 결제 내역이 시트에 저장되었습니다.")
+                    } else {
+                        showNotification("가계부 기록 실패 ❌", "${transaction.merchant} 결제 내역 전송에 실패했습니다.")
                     }
                 } else {
                     Log.w(TAG, "웹훅 URL이 설정되지 않았습니다.")
+                    showNotification("가계부 기록 실패 ⚠️", "웹훅 URL이 설정되지 않았습니다. 앱 설정에서 확인해주세요.")
                 }
             }
         } else {
-            Log.w(TAG, "파싱 실패: $fullText")
+            Log.w(TAG, "파싱 실패: $fullTextFallback")
         }
     }
 
-    private fun showSuccessNotification(tx: CardTransactionParser.Transaction) {
+    private fun showNotification(title: String, message: String) {
         try {
             val builder = NotificationCompat.Builder(this, "SMART_BUDGET_CHANNEL")
                 .setSmallIcon(android.R.drawable.ic_dialog_info)
-                .setContentTitle("가계부 자동 기록 완료 📝")
-                .setContentText("${tx.merchant}에서 ${tx.amount}원 결제 내역이 시트에 저장되었습니다.")
+                .setContentTitle(title)
+                .setContentText(message)
                 .setPriority(NotificationCompat.PRIORITY_DEFAULT)
                 .setAutoCancel(true)
 
             with(NotificationManagerCompat.from(this)) {
-                // 권한 체크는 NotificationListenerService 이므로 무시하거나, 
-                // Target API 33 이상이면 POST_NOTIFICATIONS 필요하지만 앱 수준에서 처리했다고 가정
-                notify(System.currentTimeMillis().toInt(), builder.build())
+                // API 33 (TIRAMISU) 이상에서는 POST_NOTIFICATIONS 권한 체크
+                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+                    if (androidx.core.content.ContextCompat.checkSelfPermission(
+                            this@CardNotificationListener,
+                            android.Manifest.permission.POST_NOTIFICATIONS
+                        ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+                    ) {
+                        notify(System.currentTimeMillis().toInt(), builder.build())
+                    } else {
+                        Log.w(TAG, "POST_NOTIFICATIONS 권한이 없어 알림을 표시할 수 없습니다.")
+                    }
+                } else {
+                    notify(System.currentTimeMillis().toInt(), builder.build())
+                }
             }
         } catch (e: Exception) {
             Log.e(TAG, "알림 띄우기 실패", e)
